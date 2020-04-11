@@ -5,7 +5,49 @@ routerId = 0
 inputPorts =[]
 outputPorts = []
 neighberhood = {}
+listenSockets = []
 
+def startPacking():
+    """use to compose package"""
+    
+
+
+def sendData(message):
+    """send Data, as we need notice all the neighbers"""
+    for port in outports:
+        outSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        outSocket.sendto(message,('', port))
+
+
+def recvData():
+    '''after the listenSocket the recv threads is receiving data from the socket 
+    which connect this socket'''
+    while True:
+        rs, ws, es = select.select(listenSockets,[],[])
+        for r in rs:
+            if r in listenSockets:
+                package, address = r.recvfrom(2048)
+                message = package.encode('utf-8')
+                print("message received: {0}".format(message))
+
+def initListenSocket():
+    """init all the ports which need to listen"""
+    for port in inputPorts:
+        inSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        inSocket.bind('', port)
+        listenSockets.append(inSocket)
+        
+        
+def printTable():
+    """print the RIP routing table"""
+    print('RIP routing table:')    
+    print('-'* 90)
+    mat = "{:20}\t{:20}\t{:20}\t{:20}"
+    print(mat.format("Destination","Next Hop","Metric","Tag"))
+    for key in neighberhood:
+        datas = neighberhood[key]
+        print(mat.format(key, str(datas[0]),str(datas[1]),str(datas[2])))
+        
 
 def isValidPort(port):
     if port >=1024 and port <=64000:
@@ -44,8 +86,8 @@ def loadConfig(fileName):
             items = data[1].split(',')
             for item in items:
                 ports = item.split('-')
-                if (isValidPort(int(ports[0])) and isValidId(int(ports[1]))):
-                    neighberhood[ports[1]] = [ports[1],ports[2]]
+                if (isValidPort(int(ports[0])) and isValidId(int(ports[1])) and int(ports[1]) != routerId):
+                    neighberhood[ports[1]] = [ports[1],ports[2],0]
                     outputPorts.append(ports[0])
                 else:
                     print('Invalid Id Number in outputs')
@@ -55,9 +97,8 @@ def loadConfig(fileName):
             exit(0)             
     print('log file succeed')
     print('routerId = {}'.format(routerId))
-    
-    print('inports number is {0}'.format(inputPorts))
-    print('neighberhood number is {0}'.format(outputPorts))
+    print('inports number is {0}'.format(inputPorts))    
+    printTable()
        
     file.close()
 
