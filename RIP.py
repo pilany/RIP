@@ -1,5 +1,8 @@
 import sys
 import socket
+import select
+import json
+
 
 routerId = 0
 inputPorts =[]
@@ -7,17 +10,26 @@ outputPorts = []
 neighberhood = {}
 listenSockets = []
 
-def startPacking():
+def constructPackage():
     """use to compose package"""
-    
-
+    package = {}
+    package['header'] = [2,routerId] #header: version, router_id
+    body = []
+    for key in neighberhood.keys():#body: [destination, metrics]
+        body.append([key,neighberhood[key][1]])
+    package['body'] = body
+    return package           
 
 def sendData(message):
     """send Data, as we need notice all the neighbers"""
-    for port in outports:
-        outSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        outSocket.sendto(message,('', port))
-
+    try:
+        for port in outputPorts:
+            outSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            outSocket.sendto(message,('', int(port)))
+            print("send message to {} succeed: {}".format(port,message))
+            outSocket.close()
+    except Exception as err:
+        print('sendpackage error:{0}'.format(err))
 
 def recvData():
     '''after the listenSocket the recv threads is receiving data from the socket 
@@ -27,15 +39,25 @@ def recvData():
         for r in rs:
             if r in listenSockets:
                 package, address = r.recvfrom(2048)
-                message = package.encode('utf-8')
+                message = json.loads(package.decode('utf-8'))
                 print("message received: {0}".format(message))
+                
+                
+def releaseSocket():
+    for sock in inSocket:
+        sock.close()
+    
 
 def initListenSocket():
     """init all the ports which need to listen"""
-    for port in inputPorts:
-        inSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        inSocket.bind('', port)
-        listenSockets.append(inSocket)
+    try:
+        for port in inputPorts:
+            inSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            inSocket.bind(('', int(port)))
+            listenSockets.append(inSocket)
+            print('creat listen socket:{} succeed'.format(port))
+    except Exception as err:
+        print('creat listen socket error:{0}'.format(err))
         
         
 def printTable():
@@ -44,7 +66,7 @@ def printTable():
     print('-'* 90)
     mat = "{:20}\t{:20}\t{:20}\t{:20}"
     print(mat.format("Destination","Next Hop","Metric","Tag"))
-    for key in neighberhood:
+    for key in neighberhood.keys():
         datas = neighberhood[key]
         print(mat.format(key, str(datas[0]),str(datas[1]),str(datas[2])))
         
@@ -86,11 +108,11 @@ def loadConfig(fileName):
             items = data[1].split(',')
             for item in items:
                 ports = item.split('-')
-                if (isValidPort(int(ports[0])) and isValidId(int(ports[1])) and int(ports[1]) != routerId):
+                if (isValidPort(int(ports[0])) and isValidId(int(ports[1])) and ports[1] != routerId):
                     neighberhood[ports[1]] = [ports[1],ports[2],0]
                     outputPorts.append(ports[0])
                 else:
-                    print('Invalid Id Number in outputs')
+                    print('Invalid Id Number or RouterId in outputs')
                     exit(0)                    
         else:         
             print('Invalid configure file')
@@ -98,15 +120,17 @@ def loadConfig(fileName):
     print('log file succeed')
     print('routerId = {}'.format(routerId))
     print('inports number is {0}'.format(inputPorts))    
-    printTable()
-       
+    printTable()      
     file.close()
 
 def main():
     """main entrance"""
-    "fileName = sys.argv[1]"
-    fileName = "router1.conf"
+    fileName = sys.argv[1]
+    #fileName = "router1.conf"
     loadConfig(fileName)
-    
+    initListenSocket()#start listenthreads
+    sendData(json.dumps(constructPackage()).encode('utf-8'))
+    recvData() #start recvThreads
 
+    releaseSocket()
 main()
