@@ -2,18 +2,21 @@ import sys
 import socket
 import select
 import json
+import time
 
 
-routerId = 0
+
 inputPorts =[]
 outputPorts = []
 neighberhood = {}
 listenSockets = []
 
-def constructPackage():
+
+
+def constructPackage(routerId):
     """use to compose package"""
     package = {}
-    package['header'] = [2,routerId] #header: version, router_id
+    package['header'] = [2,int(routerId)] #header: version, router_id
     body = []
     for key in neighberhood.keys():#body: [destination, metrics]
         body.append([key,neighberhood[key][1]])
@@ -23,24 +26,35 @@ def constructPackage():
 def sendData(message):
     """send Data, as we need notice all the neighbers"""
     try:
+        
         for port in outputPorts:
             outSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             outSocket.sendto(message,('', int(port)))
             print("send message to {} succeed: {}".format(port,message))
             outSocket.close()
+        time.sleep(30) 
     except Exception as err:
         print('sendpackage error:{0}'.format(err))
-
+    
+def IsValidPacket(packet):
+    """vertify  validity """
+    isValid = True
+    tempRouterid = int(packet['header'][1])
+    if(packet['header'][0] != 2 or isValidId(tempRouterid)== False):
+        isValid =False
+    return isValid
+        
+        
 def recvData():
     '''after the listenSocket the recv threads is receiving data from the socket 
-    which connect this socket'''
-    while True:
-        rs, ws, es = select.select(listenSockets,[],[])
-        for r in rs:
-            if r in listenSockets:
-                package, address = r.recvfrom(2048)
-                message = json.loads(package.decode('utf-8'))
-                print("message received: {0}".format(message))
+    which connect this socket''' 
+    
+    rs, ws, es = select.select(listenSockets,[],[])
+    for r in rs:
+        if r in listenSockets:
+            package, address = r.recvfrom(2048)
+            message = json.loads(package.decode('utf-8'))
+            print("message received: {0}".format(message))
                 
                 
 def releaseSocket():
@@ -83,7 +97,6 @@ def isValidId(num):
     else:
         return False
     
-
 def loadConfig(fileName):
     """load the configure file and init every thing we need"""
     file = open(fileName)
@@ -119,18 +132,22 @@ def loadConfig(fileName):
             exit(0)             
     print('log file succeed')
     print('routerId = {}'.format(routerId))
-    print('inports number is {0}'.format(inputPorts))    
+    print('inports number is {0}'.format(inputPorts)) 
+    print('outports number is {0}'.format(outputPorts))
     printTable()      
     file.close()
+    return routerId
 
 def main():
     """main entrance"""
     fileName = sys.argv[1]
     #fileName = "router1.conf"
-    loadConfig(fileName)
+    routerId=loadConfig(fileName)
     initListenSocket()#start listenthreads
-    sendData(json.dumps(constructPackage()).encode('utf-8'))
-    recvData() #start recvThreads
-
+     
+    
+    while True:
+        sendData(json.dumps(constructPackage(routerId)).encode('utf-8'))
+        recvData() #start recvThreads   
     releaseSocket()
 main()
