@@ -5,21 +5,34 @@ import json
 import time
 
 
-
+#my_router_info
+router_id = None
 inputPorts =[]
 outputPorts = []
-neighberhood = {}
+routingtable = []
 listenSockets = []
 
+MAX_METRIC = 16
+HEAD_ERCOMMAND = 2
+HEAD_ERVERSION = 2
 
+#time control
+TIME_OUT = 50 #default 180
+GARBAGE_COLLECT_TIME = 30 #default 120
+PERIODIC_TIME = 10 #default 30
+CHECK_TIME = 5 #using to check timeout and garbage collection for routing table
+
+def updateRoutingTable(packet):
+    """uodate the neighborhood table"""
+    
 
 def constructPackage(routerId):
     """use to compose package"""
     package = {}
     package['header'] = [2,int(routerId)] #header: version, router_id
     body = []
-    for key in neighberhood.keys():#body: [destination, metrics]
-        body.append([key,neighberhood[key][1]])
+    for item in routingtable:#body: [destination, metrics]
+        body.append([item['destination'],item['metric']])
     package['body'] = body
     return package           
 
@@ -37,12 +50,17 @@ def sendData(message):
         print('sendpackage error:{0}'.format(err))
     
 def IsValidPacket(packet):
-    """vertify  validity """
+    """vertify  validity check the version match 2
+    and the routerid and ports are valubable"""
     isValid = True
     tempRouterid = int(packet['header'][1])
     if(packet['header'][0] != 2 or isValidId(tempRouterid)== False):
         isValid =False
+    for i in packet['body']:
+        if(isValidId(int( i[0]))==False) or int(i[1]) == 16:
+           isValid =False
     return isValid
+
         
         
 def recvData():
@@ -55,7 +73,11 @@ def recvData():
             package, address = r.recvfrom(2048)
             message = json.loads(package.decode('utf-8'))
             print("message received: {0}".format(message))
-                
+            isValid = IsValidPacket(message)  
+            if isValis == False:
+                print("Invalid packet.")
+            else:
+                updateTable(message)
                 
 def releaseSocket():
     for sock in inSocket:
@@ -76,13 +98,32 @@ def initListenSocket():
         
 def printTable():
     """print the RIP routing table"""
-    print('RIP routing table:')    
+    
+    global router_id
+    print('>>>>>>>>>>>>RIP routing table:' + str(router_id))    
     print('-'* 90)
-    mat = "{:20}\t{:20}\t{:20}\t{:20}"
-    print(mat.format("Destination","Next Hop","Metric","Tag"))
-    for key in neighberhood.keys():
-        datas = neighberhood[key]
-        print(mat.format(key, str(datas[0]),str(datas[1]),str(datas[2])))
+    mat = "{:12}\t{:12}\t{:12}\t{:12}\t{:12}\t{:12}"
+    print(mat.format("Destination","Metric","Next Hop","Flag","Garbage","Time Out"))
+    for item in routingtable:      
+        if item['destination'] != router_id:
+            if(item['last_update_time'] is None):
+                timeout = '-'
+            else:
+                timeout = int(TIME_OUT - 
+                              int(time.time()-item['last_update_time']))
+            
+            if(item['garbage_collect_start'] is None):
+                garbage = '-'
+            else:
+                garbage = int(GARBAGE_COLLECT_TIME - 
+                              int(time.time()-item['garbage_collect_start']))
+            
+            if(item['router_change_flag'] is None):
+                router_change = '-'
+            else:
+                router_change = item['router_change_flag']
+            print(mat.format(item['destination'], item['metric'], 
+                             item['next_hop'],router_change,garbage,timeout))
         
 
 def isValidPort(port):
@@ -96,16 +137,19 @@ def isValidId(num):
         return True
     else:
         return False
-    
-def loadConfig(fileName):
+################################################################################
+#              stage 1 : read config file                                      #
+################################################################################
+def loadConfigFile(fileName):
     """load the configure file and init every thing we need"""
+    global router_id, inputPorts ,outputPorts ,routingtable ,listenSockets 
     file = open(fileName)
     lines = file.read().splitlines()
     for line in lines:
         data = line.split(' ')
         if data[0] == 'router-id':
             if isValidId(int(data[1])):
-                routerId = data[1]
+                routerId = int(data[1])
             else:
                 print('Invalid Id Number')
                 exit(0)
@@ -113,7 +157,7 @@ def loadConfig(fileName):
             ports = data[1].split(',')
             for port in ports:
                 if isValidPort(int(port)):
-                    inputPorts.append(port)
+                    inputPorts.append(int(port))
                 else:
                     print('Invalid Id Number in input-ports')
                     exit(0)
@@ -121,8 +165,16 @@ def loadConfig(fileName):
             items = data[1].split(',')
             for item in items:
                 ports = item.split('-')
-                if (isValidPort(int(ports[0])) and isValidId(int(ports[1])) and ports[1] != routerId):
-                    neighberhood[ports[1]] = [ports[1],ports[2],0]
+                if (isValidPort(int(ports[0])) and isValidId(int(ports[1]))):
+                    table_item = {
+                        "destination": ports[1],
+                        "metric": 0, 
+                        "next_hop": ports[0],
+                        "router_change_flag" : False,
+                        "garbage_collect_start": None,
+                        "last_update_time": None
+                    }
+                    routingtable.append(table_item)
                     outputPorts.append(ports[0])
                 else:
                     print('Invalid Id Number or RouterId in outputs')
@@ -142,7 +194,7 @@ def main():
     """main entrance"""
     fileName = sys.argv[1]
     #fileName = "router1.conf"
-    routerId=loadConfig(fileName)
+    routerId=loadConfigFile(fileName)
     initListenSocket()#start listenthreads
      
     
