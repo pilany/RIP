@@ -217,8 +217,7 @@ def createPacket( isUpdateOnly):
                 
         #poisoned reverse if the next_ho_id == neighbour_id and the destination
         # need throuh neighbour so sign the metric 16
-        if str(item['next_hop_id'] in neighbours 
-                and item['destination'] != item['next_hop_id']):
+        if str(item['next_hop_id']) in neighbours and item['destination'] != item['next_hop_id']:
             entry = createPacketEntry(item['destination'], 16)
         else:
             entry = createPacketEntry(item['destination'], item['metric'])    
@@ -294,9 +293,7 @@ def IsValidPacket(packet):
         isValid =False
     entry = packet['entry']
     for item in entry:
-        if isValidId(item['destination'])==False or ( item['metric']>16 or item['metric'] <0):
-            isValid =False
-        if isValidId(item['next_hop_id'])==False:
+        if isValidId(item[2])==False or ( item[5]>16 or item[5] <0):
             isValid =False
     return isValid
  
@@ -306,26 +303,29 @@ def processPacket(packet):
     sendRouterId = packet['header'][3]
     entry = packet['entry']
     
-    senderInfo = getItemFormTable(sendRouterId)
+    senderInfo = getItemFromTable(sendRouterId)
+    table_item = senderInfo[0]
+    index = senderInfo[1]-1
     for item in entry:
-        destination = item[0]
-        metric = item[1]
-        totalMetric = metric + senderInfo[0]['metric']
+        destination = item[2]
+        metric = item[5]
+        
+        totalMetric = metric + table_item['metric']
+        print(metric, table_item['metric'])
         if totalMetric > 16:
             totalMetric = 16
         if senderInfo[0] == None:#if it doesnot in the routing table, add to table
             if totalMetric < 16:
                 addToRoutingTable(destination, totalMetric, sendRouterId)
         else:
-            item = senderInfo[0]
-            index = senderInfo[1]
-            if item['next_hop_id'] == sendRouterId:
-                if int(item['metric'] )!= totalMetric:
+            
+            if table_item['next_hop_id'] == sendRouterId:
+                if int(table_item['metric'] )!= totalMetric:
                     updateRoutingTable(index, destination,totalMetric,sendRouterId,True)
                 else:
                     updateRoutingTable(index, destination,totalMetric,sendRouterId,False)
             else:
-                if int(item['metric'] )< totalMetric:
+                if int(table_item['metric'] )< totalMetric:
                     pass
                 else:
                     updateRoutingTable(index, destination,totalMetric,sendRouterId,True)
@@ -337,31 +337,32 @@ def getItemFromTable(routerId):
     for item in routing_table:
         index += 1
         if item['destination'] == routerId:
-            table_item = item['destination']
+            table_item = item
     return [table_item, index]
 
 
 def addToRoutingTable(destination, metric, nextHop):
     table_item = {
-                    "destination": ports[1],
-                    "metric": 0, 
-                    "next_hop_id": my_router_id,
+                    "destination": destination,
+                    "metric": metric, 
+                    "next_hop_id": nextHop,
                     "router_change_flag" : True,
                     "garbage_collect_start": None,
                     "last_update_time": None
                 }   
-    routing_table.aapend(table_item)
+    routing_table.append(table_item)
     print(">>>>>>>>>>>>>>>>add to routing table")
     printTable()
 
 
 def updateRoutingTable(index,destination, metric, sender, routeChange = False):
     """uodate the neighborhood table""" 
+    print( "index = ", index)
     if metric < 16:
         table_item = {
-                        "destination": ports[1],
-                        "metric": 0, 
-                        "next_hop_id": my_router_id,
+                        "destination": destination,
+                        "metric": metric, 
+                        "next_hop_id": sender,
                         "router_change_flag" : routeChange,
                         "garbage_collect_start": None,
                         "last_update_time": None
@@ -370,9 +371,9 @@ def updateRoutingTable(index,destination, metric, sender, routeChange = False):
     else:
         if routeChange:
             table_item = {
-                            "destination": ports[1],
-                            "metric": 0, 
-                            "next_hop_id": my_router_id,
+                            "destination": destination,
+                            "metric": metric, 
+                            "next_hop_id": sender,
                             "router_change_flag" : routeChange,
                             "garbage_collect_start": None,
                             "last_update_time": None
@@ -381,7 +382,7 @@ def updateRoutingTable(index,destination, metric, sender, routeChange = False):
             if is_periodic_send:
                 pass
             else:
-                sendpacket(True) #send the updated route only
+                sendPacket(True) #send the updated route only
     print(">>>>>>>>>>>>>>>>update routing table")
     printTable()        
 
