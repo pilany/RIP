@@ -3,6 +3,8 @@ import socket
 import select
 import json
 import time
+import threading
+import random
 
 
 #information from configure file
@@ -18,7 +20,7 @@ routing_table = []
 #routing table config data
 MAX_METRIC = 16
 HEAD_ERCOMMAND = 2
-HEAD_ERVERSION = 2
+HEAD_VERSION = 2
 MUST_BE_ZERO = 0
 ADDRESS_FAMILY_IDENTIFIER = 2
 
@@ -33,6 +35,9 @@ periodic_timer = None
 timeout_timer = None
 garbage_collection_timer = None
 
+
+#when true, there is no need to send trigger update at the same time
+is_periodic_send = False
 
 #######################   read configure file         ##########################
 
@@ -63,9 +68,9 @@ def loadConfigFile(fileName):
                 ports = item.split('-')
                 if (isValidPort(int(ports[0])) and isValidId(int(ports[1]))):
                     table_item = {
-                        "destination": ports[1],
-                        "metric": 0, 
-                        "next_hop_id": my_router_id,
+                        "destination": int(ports[1]),
+                        "metric": int(ports[2]), 
+                        "next_hop_id": int(ports[1]),
                         "router_change_flag" : False,
                         "garbage_collect_start": None,
                         "last_update_time": None
@@ -78,15 +83,16 @@ def loadConfigFile(fileName):
                     exit(0)                    
         else:         
             print('Invalid configure file')
-            exit(0)             
+            exit(0)
+    file.close()
     print('log file succeed')
-    print('routerId = {}'.format(my_router_Id))
     print('inports number are {0}'.format(input_ports)) 
     print('outports number are {0}'.format(output_ports))
     print('directly neighbours are {0}'.format(output_ports))
+    print('>>>>>>>>>>>>RIP routing table:' + str(my_router_id)) 
     printTable()      
-    file.close()
-    return my_router_id
+    
+    
 
 #check the port is or not between 1024 and 64000
 def isValidPort(port):
@@ -105,6 +111,7 @@ def isValidId(num):
 ##################### create listen sockets to each neighbor###################   
 def initListenSocket():
     """init all the ports which needs to  be listen"""
+    global listen_sockets
     try:
         for port in input_ports:
             inSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -123,50 +130,105 @@ def initPeriodicTimer():
     periodic_timer.start()
     
     
-def    initTimeoutTimer():
+def initTimeoutTimer():
     global timeout_timer
     timeout_timer = threading.Timer(CHECK_TIME, processRouteTimeout, [])
     timeout_timer.start()
     
-def    initGarbageCollectionTimer():
+def initGarbageCollectionTimer():
     global garbage_collection_timer
     garbage_collection_timer = threading.Timer(GARBAGE_COLLECT_TIME, processGarbageCollection, [])
     garbage_collection_timer.start()
 
 
+def sendUnsoclicitedResponse():
+    """send unsoclicited response"""
+    global is_periodic_send, periodic_timer
+    is_periodic_send = True  #start periodic sending
+    sendPacket(False)  #send out the whole routing table
+    is_periodic_send = False # end periodic sending
+    random_offset = random.randint(-5,5)
+    period = PERIODIC_TIME + random_offset
+    periodic_timer.cancel()
+    periodic_timer = threading.Timer(period, sendUnsoclicitedResponse, [])
+    periodic_timer.start()
 
 
+def processRouteTimeout():
+    global timeout_timer
+    for item in routing_table:
+        destination = item['destination']
+        if destination != my_router_id:
+            #
+            if item['last_update_time'] is None or (time.time()- item['last_update_time']) < TIME_OUT:
+                pass
+            else:
+                next_hop_id = item['next_hop_id']
+                updataRoutingTable(destinatin, MAX_METRIC, next_hop_id,true)
+                
+    random_offset = random.randint(-5,5)
+    period = CHECK_TIME + random_offset
+    timeout_timer.cancel()
+    timeout_timer = threading.Timer(period, processRouteTimeout, [])
+    timeout_timer.start()        
 
 
-def updateRoutingTable(packet):
-    """uodate the neighborhood table"""
+def processGarbageCollection():
+    global garbage_collection_timer
+    for item in routing_table:
+        destination = item['destination']
+        if destination != my_router_id:
+            #
+            if item['garbage_collect_start'] is None or (time.time() - item['garbage_collect_start']) < GARBAGE_COLLECT_TIME:
+                pass
+            else:
+                deleteFromTable(destination)
+                
+                
+    random_offset = random.randint(-5,5)
+    period = CHECK_TIME + random_offset
+    garbage_collection_timer.cancel()
+    garbage_collection_timer = threading.Timer(period, processGarbageCollection, [])
+    garbage_collection_timer.start()     
+
+
+def deleteFromTable(destination):
+    index = 0
+    for item in  routing_table:
+        index += 1
+        if item['destination'] == destination:
+            break
+    routing_table.pop(index -1)
+    
+
+
     
 #################################  create the response packet###############
-def createPackage(routerId, isUpdateOnly):
+def createPacket( isUpdateOnly):
     """use to compose package"""
     global neighbours
     package = {}  
-    package['header'] =  createHeader(routerId)
+    package['header'] =  createPacketHeader()
     body = []
-    for table_item in routing_table:
+    for item in routing_table:
         if isUpdateOnly:
-            if table['route_change_flag'] == 'False':
+            if item['route_change_flag'] == 'False':
                 continue
                 
         #poisoned reverse if the next_ho_id == neighbour_id and the destination
         # need throuh neighbour so sign the metric 16
-        if str(table['next_hop_id'] in neighbours 
-                and table['destination'] != table['next_hop_id']):
-            entry = createPacketEntry(table['destination'], 16)
+        if str(item['next_hop_id'] in neighbours 
+                and item['destination'] != item['next_hop_id']):
+            entry = createPacketEntry(item['destination'], 16)
         else:
-            entry = createPacketEntry(table['destination'], table['metric'])    
+            entry = createPacketEntry(item['destination'], item['metric'])    
         body.append(entry)
-    package['body'] = body
+    package['entry'] = body
     return package           
 
 def createPacketHeader():
     """create packet header"""
-    header = [HEAD_ERCOMMAND,HEAD_ERVERSION,MUST_BE_ZERO,int(routerId)]
+    header = [HEAD_ERCOMMAND,HEAD_VERSION,MUST_BE_ZERO,int(my_router_id)]
     return header
 
 def createPacketEntry(destination,metric):
@@ -180,11 +242,12 @@ def createPacketEntry(destination,metric):
     
     
 
-    
-def sendData(message):
-    """send Data, as we need notice all the neighbers"""
+#######################send RIP response ############################
+def sendPacket(isUpdateOnly):
+    """send out unsolicited response to each neighbour router"""
     try:
-        
+        packet = createPacket(isUpdateOnly)
+        message = json.dumps(packet).encode('utf-8')
         for port in output_ports:
             outSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             outSocket.sendto(message,('', int(port)))
@@ -193,48 +256,145 @@ def sendData(message):
         time.sleep(30) 
     except Exception as err:
         print('sendpackage error:{0}'.format(err))
+        
+        
+        
     
+
+        
+############################### receive packets from sockets ###########        
+def recvPacket():
+    '''after the listenSocket the recv threads is receiving data from the socket 
+    which connect this socket''' 
+    while True:
+        rs, ws, es = select.select(listen_sockets,[],[])
+        for r in rs:
+            if r in listen_sockets:
+                message, address = r.recvfrom(2048)
+                packet = json.loads(message.decode('utf-8'))
+                print("message received: {0}".format(packet))
+                if IsValidPacket(packet): #check the packet is or not legal  
+                    processPacket(packet)
+                else:
+                    print("Invalid packet.")
+                
+ 
 def IsValidPacket(packet):
     """vertify  validity check the version match 2
     and the routerid and ports are valubable"""
+    MAX_METRIC = 16
+    HEAD_ERCOMMAND = 2
+    HEAD_ERVERSION = 2
+    MUST_BE_ZERO = 0    
     isValid = True
-    tempRouterid = int(packet['header'][1])
-    if(packet['header'][0] != 2 or isValidId(tempRouterid)== False):
+    tempRouterid = packet['header'][3]
+    if packet['header'][0] != HEAD_ERCOMMAND or packet['header'][1] != HEAD_VERSION :
         isValid =False
-    for i in packet['body']:
-        if(isValidId(int( i[0]))==False) or int(i[1]) == 16:
-           isValid =False
+    if packet['header'][2] != MUST_BE_ZERO or isValidId(tempRouterid)==False:
+        isValid =False
+    entry = packet['entry']
+    for item in entry:
+        if isValidId(item['destination'])==False or ( item['metric']>16 or item['metric'] <0):
+            isValid =False
+        if isValidId(item['next_hop_id'])==False:
+            isValid =False
     return isValid
-
-        
-        
-def recvData():
-    '''after the listenSocket the recv threads is receiving data from the socket 
-    which connect this socket''' 
+ 
+########################process       packet          #######################
+#deal with packet 
+def processPacket(packet):
+    sendRouterId = packet['header'][3]
+    entry = packet['entry']
     
-    rs, ws, es = select.select(listenSockets,[],[])
-    for r in rs:
-        if r in listenSockets:
-            package, address = r.recvfrom(2048)
-            message = json.loads(package.decode('utf-8'))
-            print("message received: {0}".format(message))
-            isValid = IsValidPacket(message)  
-            if isValis == False:
-                print("Invalid packet.")
+    senderInfo = getItemFormTable(sendRouterId)
+    for item in entry:
+        destination = item[0]
+        metric = item[1]
+        totalMetric = metric + senderInfo[0]['metric']
+        if totalMetric > 16:
+            totalMetric = 16
+        if senderInfo[0] == None:#if it doesnot in the routing table, add to table
+            if totalMetric < 16:
+                addToRoutingTable(destination, totalMetric, sendRouterId)
+        else:
+            item = senderInfo[0]
+            index = senderInfo[1]
+            if item['next_hop_id'] == sendRouterId:
+                if int(item['metric'] )!= totalMetric:
+                    updateRoutingTable(index, destination,totalMetric,sendRouterId,True)
+                else:
+                    updateRoutingTable(index, destination,totalMetric,sendRouterId,False)
             else:
-                updateTable(message)
-                
-
+                if int(item['metric'] )< totalMetric:
+                    pass
+                else:
+                    updateRoutingTable(index, destination,totalMetric,sendRouterId,True)
+            
         
+def getItemFromTable(routerId):
+    table_item = None
+    index = 0
+    for item in routing_table:
+        index += 1
+        if item['destination'] == routerId:
+            table_item = item['destination']
+    return [table_item, index]
+
+
+def addToRoutingTable(destination, metric, nextHop):
+    table_item = {
+                    "destination": ports[1],
+                    "metric": 0, 
+                    "next_hop_id": my_router_id,
+                    "router_change_flag" : True,
+                    "garbage_collect_start": None,
+                    "last_update_time": None
+                }   
+    routing_table.aapend(table_item)
+    print(">>>>>>>>>>>>>>>>add to routing table")
+    printTable()
+
+
+def updateRoutingTable(index,destination, metric, sender, routeChange = False):
+    """uodate the neighborhood table""" 
+    if metric < 16:
+        table_item = {
+                        "destination": ports[1],
+                        "metric": 0, 
+                        "next_hop_id": my_router_id,
+                        "router_change_flag" : routeChange,
+                        "garbage_collect_start": None,
+                        "last_update_time": None
+                    }
+        routing_table[index] = table_item
+    else:
+        if routeChange:
+            table_item = {
+                            "destination": ports[1],
+                            "metric": 0, 
+                            "next_hop_id": my_router_id,
+                            "router_change_flag" : routeChange,
+                            "garbage_collect_start": None,
+                            "last_update_time": None
+                        }
+            routing_table.append(table_item)
+            if is_periodic_send:
+                pass
+            else:
+                sendpacket(True) #send the updated route only
+    print(">>>>>>>>>>>>>>>>update routing table")
+    printTable()        
+
+########################print the whole routing table #######################      
 def printTable():
     """print the RIP routing table"""
     
-    global router_id
-    print('>>>>>>>>>>>>RIP routing table:' + str(my_router_id))    
+    global my_router_id
+      
     print('-'* 90)
     mat = "{:12}\t{:12}\t{:12}\t{:12}\t{:12}\t{:12}"
     print(mat.format("Destination","Metric","Next Hop","Flag","Garbage","Time Out"))
-    for item in routingtable:      
+    for item in routing_table:      
         if item['destination'] != my_router_id:
             if(item['last_update_time'] is None):
                 timeout = '-'
@@ -253,7 +413,7 @@ def printTable():
             else:
                 router_change = item['router_change_flag']
             print(mat.format(item['destination'], item['metric'], 
-                             item['next_hop'],router_change,garbage,timeout))
+                             item['next_hop_id'],router_change,garbage,timeout))
         
 
 
@@ -261,15 +421,14 @@ def main():
     """main entrance"""
     fileName = sys.argv[1]
     #start read configure file
-    routerId=loadConfigFile(fileName)
+    loadConfigFile(fileName)
     
     initListenSocket()#start listenthreads
     initPeriodicTimer()#init the periodic timer
     initTimeoutTimer()#init timeout timer
     initGarbageCollectionTimer()#init garbage collection timer
     
-    while True:
-        sendData(json.dumps(constructPackage(routerId)).encode('utf-8'))
-        recvData() #start recvThreads   
-    releaseSocket()
+    
+    recvPacket() #start recvThreads   
+
 main()
