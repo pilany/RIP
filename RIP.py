@@ -16,6 +16,7 @@ listen_sockets = []
 
 #routing table
 routing_table = []
+configure_table = []
 
 #routing table config data
 MAX_METRIC = 16
@@ -43,7 +44,7 @@ is_periodic_send = False
 
 def loadConfigFile(fileName):
     """load the configure file and init every thing we need"""
-    global my_router_id, input_ports ,output_ports ,routing_table ,listen_pockets 
+    global my_router_id, input_ports ,output_ports ,configure_table ,listen_pockets 
     file = open(fileName)
     lines = file.read().splitlines()
     for line in lines:
@@ -75,7 +76,7 @@ def loadConfigFile(fileName):
                         "garbage_collect_start": None,
                         "last_update_time": None
                     }
-                    routing_table.append(table_item)
+                    configure_table.append(table_item)
                     output_ports.append(ports[0])
                     neighbours.append(ports[1])
                 else:
@@ -122,7 +123,7 @@ def initListenSocket():
         print('creat listen socket error:{0}'.format(err))
 
 
-####################         set three timers             ##################### 
+####################         set timers to response        ##################### 
 def initPeriodicTimer():
     """init periodic timer for sending unsolicited response"""
     global periodic_timer
@@ -137,7 +138,7 @@ def initTimeoutTimer():
     
 def initGarbageCollectionTimer():
     global garbage_collection_timer
-    garbage_collection_timer = threading.Timer(GARBAGE_COLLECT_TIME, processGarbageCollection, [])
+    garbage_collection_timer = threading.Timer(CHECK_TIME, processGarbageCollection, [])
     garbage_collection_timer.start()
 
 
@@ -159,12 +160,12 @@ def processRouteTimeout():
     for item in routing_table:
         destination = item['destination']
         if destination != my_router_id:
-            #
+            # time out then sign the destination matric 16
             if item['last_update_time'] is None or (time.time()- item['last_update_time']) < TIME_OUT:
                 pass
             else:
                 next_hop_id = item['next_hop_id']
-                updataRoutingTable(destinatin, MAX_METRIC, next_hop_id,true)
+                updateRoutingTable(destination, MAX_METRIC, next_hop_id,True)
                 
     random_offset = random.randint(-5,5)
     period = CHECK_TIME + random_offset
@@ -178,13 +179,12 @@ def processGarbageCollection():
     for item in routing_table:
         destination = item['destination']
         if destination != my_router_id:
-            #
+            #if the garbage time is out  delete it from routing table
             if item['garbage_collect_start'] is None or (time.time() - item['garbage_collect_start']) < GARBAGE_COLLECT_TIME:
                 pass
             else:
                 deleteFromTable(destination)
-                
-                
+                              
     random_offset = random.randint(-5,5)
     period = CHECK_TIME + random_offset
     garbage_collection_timer.cancel()
@@ -192,17 +192,7 @@ def processGarbageCollection():
     garbage_collection_timer.start()     
 
 
-def deleteFromTable(destination):
-    index = 0
-    for item in  routing_table:
-        index += 1
-        if item['destination'] == destination:
-            break
-    routing_table.pop(index -1)
-    
 
-
-    
 #################################  create the response packet###############
 def createPacket( isUpdateOnly):
     """use to compose package"""
@@ -212,10 +202,10 @@ def createPacket( isUpdateOnly):
     body = []
     for item in routing_table:
         if isUpdateOnly:
-            if item['route_change_flag'] == 'False':
+            if item['router_change_flag'] == 'False':
                 continue
                 
-        #poisoned reverse if the next_ho_id == neighbour_id and the destination
+        #poisoned reverse if the next_ho_id = neighbour_id and the destination
         # need throuh neighbour so sign the metric 16
         if str(item['next_hop_id']) in neighbours and item['destination'] != item['next_hop_id']:
             entry = createPacketEntry(item['destination'], 16)
@@ -226,14 +216,13 @@ def createPacket( isUpdateOnly):
     return package           
 
 def createPacketHeader():
-    """create packet header"""
+    """create packet header header format: command|version|must be zero|id"""
     header = [HEAD_ERCOMMAND,HEAD_VERSION,MUST_BE_ZERO,int(my_router_id)]
     return header
 
 def createPacketEntry(destination,metric):
-    """create packet entry"""
-    MUST_BE_ZERO = 0
-    ADDRESS_FAMILY_IDENTIFIER = 2    
+    """create packet entry, format: address family identifier|must be zero| IPv4 address
+    |must be zero|must be zero|metric"""  
     entry = [ADDRESS_FAMILY_IDENTIFIER,MUST_BE_ZERO,destination,
              MUST_BE_ZERO,MUST_BE_ZERO,metric]
     return entry
@@ -250,9 +239,14 @@ def sendPacket(isUpdateOnly):
         for port in output_ports:
             outSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             outSocket.sendto(message,('', int(port)))
-            print("send message to {} succeed: {}".format(port,message))
             outSocket.close()
-        time.sleep(30) 
+            if isUpdateOnly:
+                print("send trigger message to {} succeed: {}".format(port,message))
+            else:
+                print("send unsolicited message to {} succeed: {}".format(port,message))            
+        #once packet has been send the flags should be set into no change
+        for item in routing_table:
+            item['router_change_flag'] = False
     except Exception as err:
         print('sendpackage error:{0}'.format(err))
         
@@ -280,11 +274,7 @@ def recvPacket():
  
 def IsValidPacket(packet):
     """vertify  validity check the version match 2
-    and the routerid and ports are valubable"""
-    MAX_METRIC = 16
-    HEAD_ERCOMMAND = 2
-    HEAD_ERVERSION = 2
-    MUST_BE_ZERO = 0    
+    and the routerid and ports are valubable"""   
     isValid = True
     tempRouterid = packet['header'][3]
     if packet['header'][0] != HEAD_ERCOMMAND or packet['header'][1] != HEAD_VERSION :
@@ -302,43 +292,66 @@ def IsValidPacket(packet):
 def processPacket(packet):
     sendRouterId = packet['header'][3]
     entry = packet['entry']
+    #get the line which can get the metric from sender to this router
+    senderInfo = getItemFromRoutingTable(sendRouterId)  
+      # if exit index >= 0
+    #print(">>>>>>>>>>>>>>>>>entry=", entry)
+    if senderInfo is None:
+        senderInfo = getItemFromConfigerTable(sendRouterId)
+        addToRoutingTable(sendRouterId,senderInfo['metric'], sendRouterId)
+        
     
-    senderInfo = getItemFromTable(sendRouterId)
-    table_item = senderInfo[0]
-    index = senderInfo[1]-1
     for item in entry:
+        #print(">>>>>>>>>>>>>>each entry=", item)
         destination = item[2]
         metric = item[5]
-        
-        totalMetric = metric + table_item['metric']
-        print(metric, table_item['metric'])
-        if totalMetric > 16:
-            totalMetric = 16
-        if senderInfo[0] == None:#if it doesnot in the routing table, add to table
-            if totalMetric < 16:
-                addToRoutingTable(destination, totalMetric, sendRouterId)
-        else:
-            
-            if table_item['next_hop_id'] == sendRouterId:
-                if int(table_item['metric'] )!= totalMetric:
-                    updateRoutingTable(index, destination,totalMetric,sendRouterId,True)
+        if destination == my_router_id:
+            continue
+        totalMetric = metric + senderInfo['metric']
+        if totalMetric >= MAX_METRIC:
+            totalMetric = MAX_METRIC            
+        #check the new destination is in the table
+        original_item = getItemFromRoutingTable(destination) 
+             
+        #print(">>>>>>>>check destination>>>>>>>>>>>", original_item)
+        if  original_item is None: #if not in the table, add it 
+            addToRoutingTable(destination,totalMetric, sendRouterId)             
+        else:        
+                #check the next hop is or not the sender
+            if int(original_item['next_hop_id']) == sendRouterId:
+                if int(original_item['metric'])!= totalMetric:
+                    updateRoutingTable(destination,totalMetric,sendRouterId,True)
                 else:
-                    updateRoutingTable(index, destination,totalMetric,sendRouterId,False)
-            else:
-                if int(table_item['metric'] )< totalMetric:
+                    updateRoutingTable(destination,totalMetric,sendRouterId,False)
+            else: #update the next hop to table
+                if int(original_item['metric'])<= totalMetric:
                     pass
                 else:
-                    updateRoutingTable(index, destination,totalMetric,sendRouterId,True)
-            
-        
-def getItemFromTable(routerId):
-    table_item = None
+                    updateRoutingTable(destination,totalMetric,sendRouterId,True)
+
+
+################################operate routing table       ###############
+def deleteFromTable(destination):
     index = 0
-    for item in routing_table:
+    for item in  routing_table:
         index += 1
+        if item['destination'] == destination:
+            break
+    routing_table.pop(index -1)
+
+def getItemFromConfigerTable(routerId):
+    table_item = None
+    for item in configure_table:
         if item['destination'] == routerId:
-            table_item = item
-    return [table_item, index]
+            return item
+    return None    
+
+def getItemFromRoutingTable(routerId):
+    table_item = None
+    for item in routing_table:
+        if item['destination'] == routerId:
+            return item
+    return None
 
 
 def addToRoutingTable(destination, metric, nextHop):
@@ -348,16 +361,21 @@ def addToRoutingTable(destination, metric, nextHop):
                     "next_hop_id": nextHop,
                     "router_change_flag" : True,
                     "garbage_collect_start": None,
-                    "last_update_time": None
+                    "last_update_time": time.time()
                 }   
     routing_table.append(table_item)
     print(">>>>>>>>>>>>>>>>add to routing table")
     printTable()
 
+def getIndexFromTable(destination):
+    for i in range(0, len(routing_table)):
+        if routing_table[i]['destination'] ==  destination:
+            return i
+    return -1
 
-def updateRoutingTable(index,destination, metric, sender, routeChange = False):
-    """uodate the neighborhood table""" 
-    print( "index = ", index)
+
+def updateRoutingTable(destination, metric, sender, routeChange = False):
+    """update the neighborhood table""" 
     if metric < 16:
         table_item = {
                         "destination": destination,
@@ -365,8 +383,9 @@ def updateRoutingTable(index,destination, metric, sender, routeChange = False):
                         "next_hop_id": sender,
                         "router_change_flag" : routeChange,
                         "garbage_collect_start": None,
-                        "last_update_time": None
+                        "last_update_time": time.time()
                     }
+        index = getIndexFromTable(destination)
         routing_table[index] = table_item
     else:
         if routeChange:
@@ -375,15 +394,16 @@ def updateRoutingTable(index,destination, metric, sender, routeChange = False):
                             "metric": metric, 
                             "next_hop_id": sender,
                             "router_change_flag" : routeChange,
-                            "garbage_collect_start": None,
+                            "garbage_collect_start": time.time(),
                             "last_update_time": None
                         }
-            routing_table.append(table_item)
+            index = getIndexFromTable(destination)
+            routing_table[index] = table_item
             if is_periodic_send:
                 pass
             else:
                 sendPacket(True) #send the updated route only
-    print(">>>>>>>>>>>>>>>>update routing table")
+    print(">>>>>>>>>>>>>>>>update routing table metric = ", metric)
     printTable()        
 
 ########################print the whole routing table #######################      
