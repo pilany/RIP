@@ -29,7 +29,7 @@ ADDRESS_FAMILY_IDENTIFIER = 2
 TIME_OUT = 50 #default 180
 GARBAGE_COLLECT_TIME = 30 #default 120
 PERIODIC_TIME = 10 #default 30
-CHECK_TIME = 4 #using to check timeout and garbage collection for routing table
+ #CHECK_TIME = 5using to check timeout and garbage collection for routing table
 
 #timers
 periodic_timer = None
@@ -133,12 +133,12 @@ def initPeriodicTimer():
     
 def initTimeoutTimer():
     global timeout_timer
-    timeout_timer = threading.Timer(CHECK_TIME, processRouteTimeout, [])
+    timeout_timer = threading.Timer(TIME_OUT, processRouteTimeout, [])
     timeout_timer.start()
     
 def initGarbageCollectionTimer():
     global garbage_collection_timer
-    garbage_collection_timer = threading.Timer(CHECK_TIME, processGarbageCollection, [])
+    garbage_collection_timer = threading.Timer(GARBAGE_COLLECT_TIME, processGarbageCollection, [])
     garbage_collection_timer.start()
 
 
@@ -164,11 +164,11 @@ def processRouteTimeout():
             if item['last_update_time'] is None or (time.time()- item['last_update_time']) < TIME_OUT:
                 pass
             else:
-                next_hop_id = item['next_hop_id']
-                updateRoutingTable(destination, MAX_METRIC, next_hop_id,True)
+                print(">>>>>>>>>>>time out, need to update DB") #only to update the metric to 16
+                updateRoutingTable(destination, MAX_METRIC, item['next_hop_id'],True)
                 
     random_offset = random.randint(-5,5)
-    period = CHECK_TIME + random_offset
+    period = TIME_OUT + random_offset
     timeout_timer.cancel()
     timeout_timer = threading.Timer(period, processRouteTimeout, [])
     timeout_timer.start()        
@@ -183,10 +183,11 @@ def processGarbageCollection():
             if item['garbage_collect_start'] is None or (time.time() - item['garbage_collect_start']) < GARBAGE_COLLECT_TIME:
                 pass
             else:
+                print("someone need to be deleted")
                 deleteFromTable(destination)
                               
     random_offset = random.randint(-5,5)
-    period = CHECK_TIME + random_offset
+    period = GARBAGE_COLLECT_TIME + random_offset
     garbage_collection_timer.cancel()
     garbage_collection_timer = threading.Timer(period, processGarbageCollection, [])
     garbage_collection_timer.start()     
@@ -240,13 +241,16 @@ def sendPacket(isUpdateOnly):
             outSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             outSocket.sendto(message,('', int(port)))
             outSocket.close()
-            if isUpdateOnly:
-                print("send trigger message to {} succeed: {}".format(port,message))
-            else:
-                print("send unsolicited message to {} succeed: {}".format(port,message))            
+                        
         #once packet has been send the flags should be set into no change
         for item in routing_table:
             item['router_change_flag'] = False
+        if isUpdateOnly:
+            print("send trigger message to neighbour succeed")
+        else:
+            print("send unsolicited message to neighbour succeed")   
+            
+            
     except Exception as err:
         print('sendpackage error:{0}'.format(err))
         
@@ -298,7 +302,7 @@ def processPacket(packet):
     #print(">>>>>>>>>>>>>>>>>entry=", entry)
     if senderInfo is None:
         senderInfo = getItemFromConfigerTable(sendRouterId)
-        addToRoutingTable(sendRouterId,senderInfo['metric'], sendRouterId)
+        addToRoutingTable(sendRouterId,senderInfo['metric'], "-")
         
     
     for item in entry:
@@ -316,28 +320,29 @@ def processPacket(packet):
         #print(">>>>>>>>check destination>>>>>>>>>>>", original_item)
         if  original_item is None: #if not in the table, add it 
             addToRoutingTable(destination,totalMetric, sendRouterId)             
-        else:        
-                #check the next hop is or not the sender
-            if int(original_item['next_hop_id']) == sendRouterId:
+        else:      
+            if original_item['next_hop_id'] == '-': # directly connect
+                updateRoutingTable(destination,totalMetric,sendRouterId,False)        
+                #check the next hop is  the sender
+            elif int(original_item['next_hop_id']) == sendRouterId:
                 if int(original_item['metric'])!= totalMetric:
                     updateRoutingTable(destination,totalMetric,sendRouterId,True)
                 else:
                     updateRoutingTable(destination,totalMetric,sendRouterId,False)
-            else: #update the next hop to table
+            else: #check the next hop is  the sender
                 if int(original_item['metric'])<= totalMetric:
-                    pass
+                    updateRoutingTable(destination,original_item['metric'],original_item['next_hop_id'],False)
                 else:
                     updateRoutingTable(destination,totalMetric,sendRouterId,True)
 
 
 ################################operate routing table       ###############
 def deleteFromTable(destination):
-    index = 0
     for item in  routing_table:
-        index += 1
-        if item['destination'] == destination:
-            break
-    routing_table.pop(index -1)
+        if item['destination'] == destination or item['next_hop_id'] == destination:
+            routing_table.remove(item)
+    print(">>>>>>>>>>>>>>>>delete one from table")
+    printTable()
 
 def getItemFromConfigerTable(routerId):
     table_item = None
@@ -374,7 +379,7 @@ def getIndexFromTable(destination):
     return -1
 
 
-def updateRoutingTable(destination, metric, sender, routeChange = False):
+def updateRoutingTable(destination, metric, sender, routeChange):
     """update the neighborhood table""" 
     if metric < 16:
         table_item = {
@@ -412,28 +417,28 @@ def printTable():
     
     global my_router_id
       
-    print('-'* 90)
-    mat = "{:12}\t{:12}\t{:12}\t{:12}\t{:12}\t{:12}"
-    print(mat.format("Destination","Metric","Next Hop","Flag","Garbage","Time Out"))
+    print("+--------------------------------------------------------------+")
+    print("|Destination|Metric|Next Hop Id|Route Change|Timeout|Garbage|")
+    print("+--------------------------------------------------------------+")
+
+    content_format = "|{0:^11}|{1:^6}|{2:^11}|{3:^12}|{4:^7}|{5:^7}|"
     for item in routing_table:      
         if item['destination'] != my_router_id:
             if(item['last_update_time'] is None):
                 timeout = '-'
             else:
-                timeout = int(TIME_OUT - 
-                              int(time.time()-item['last_update_time']))
+                timeout = int(time.time()-item['last_update_time'])
             
             if(item['garbage_collect_start'] is None):
                 garbage = '-'
             else:
-                garbage = int(GARBAGE_COLLECT_TIME - 
-                              int(time.time()-item['garbage_collect_start']))
+                garbage = int(time.time()-item['garbage_collect_start'])
             
             if(item['router_change_flag'] is None):
                 router_change = '-'
             else:
                 router_change = item['router_change_flag']
-            print(mat.format(item['destination'], item['metric'], 
+            print(content_format.format(item['destination'], item['metric'], 
                              item['next_hop_id'],router_change,garbage,timeout))
         
 
